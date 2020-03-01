@@ -1,12 +1,10 @@
-import matplotlib as matplotlib
-
-
 # 파이썬 2와 파이썬 3 지원
-from __future__ import division, print_function, unicode_literals
+# from __future__ import division, print_function, unicode_literals
+
+import os
 
 # 공통
 import numpy as np
-import os
 
 # 일관된 출력을 위해 유사난수 초기화
 np.random.seed(42)
@@ -20,7 +18,7 @@ plt.rcParams['xtick.labelsize'] = 12
 plt.rcParams['ytick.labelsize'] = 12
 
 # 한글출력
-matplotlib.rc('font', family='gullim')
+matplotlib.rc('font', family='gulim')
 plt.rcParams['axes.unicode_minus'] = False
 
 # 그림을 저장할 폴드
@@ -74,7 +72,7 @@ import matplotlib.pyplot as plt
 housing.hist(bins=50, figsize=(20,15))
 save_fig("attribute_histogram_plots")
 plt.show()
-#그림 왜 안나오는지 아는사람?열받는다
+#그림 왜 안나오는지 아는사람?열받는다>>다시해보니 열린다 왜 열리는지 모르겠음
 
 # 데이터를 눈여겨보아 특성을 보기 전에 테스트, 즉 검증세트는 떼어놓고 들여댜보지 않기
 # 검증 세트 생성
@@ -125,8 +123,8 @@ housing["income_cat"].where(housing["income_cat"]<5,5.0, inplace=True)
 # >>>5이상은 5로 치환
 
 housing["income_cat"].value_counts()
-housing["income_cat"].hist()  #여전히 히스토그램 안생성되구요
-save_fig('income_category_hist')     #더 저장안돼
+housing["income_cat"].hist()  #여전히 히스토그램 안생성되구요>>팝업이 아니었나봄
+save_fig('income_category_hist')     #더 저장안돼>>저장돼
 
 from sklearn.model_selection import StratifiedShuffleSplit
 
@@ -291,7 +289,136 @@ housing_cat.head(10)
 housing_cat_encoded, housing_categories = housing_cat.factorize()
 housing_cat_encoded[:10]   #array([0, 0, 0, 1, 1, 1, 1, 2, 1, 1], dtype=int64)앞의 열놈 show
 
-# >>>판다스의 factorize가 해줬다고 하는데 .....믿고 그대로 쓰면되는건가?pd 안쓰나
-housing_categories[:10]
-#Index(['<1H OCEAN', 'INLAND', 'NEAR OCEAN', 'NEAR BAY', 'ISLAND'], dtype='object')
+from sklearn.preprocessing import OneHotEncoder
 
+encoder = OneHotEncoder(categories='auto')
+housing_cat_1hot = encoder.fit_transform(housing_cat_encoded.reshape(-1,1))
+housing_cat_1hot
+
+# ????????????????????????????????????????희소행렬임? 2차원 넘파이 배열로 바꾸어줘야함
+# 넘파이 배열로 바꾸기위해서 toarry
+housing_cat_1hot.toarray()
+
+# array([[1., 0., 0., 0., 0.],
+#        [1., 0., 0., 0., 0.],
+#        [1., 0., 0., 0., 0.],
+#        ...,
+#        [1., 0., 0., 0., 0.],
+#        [0., 1., 0., 0., 0.],
+#        [0., 1., 0., 0., 0.]])
+# github에서 가져오기 시작
+# [PR #9151](https://github.com/scikit-learn/scikit-learn/pull/9151)에서 가져온 CategoricalEncoder 클래스의 정의.
+# 이 클래스는 사이킷런 0.20에 포함될 예정입니다.
+
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.utils import check_array
+from sklearn.preprocessing import LabelEncoder
+from scipy import sparse
+
+
+class CategoricalEncoder(BaseEstimator, TransformerMixin):
+
+    def __init__(self, encoding='onehot', categories='auto', dtype=np.float64,
+                 handle_unknown='error'):
+        self.encoding = encoding
+        self.categories = categories
+        self.dtype = dtype
+        self.handle_unknown = handle_unknown
+
+    def fit(self, X, y=None):
+
+        if self.encoding not in ['onehot', 'onehot-dense', 'ordinal']:
+            template = ("encoding should be either 'onehot', 'onehot-dense' "
+                        "or 'ordinal', got %s")
+            raise ValueError(template % self.handle_unknown)
+
+        if self.handle_unknown not in ['error', 'ignore']:
+            template = ("handle_unknown should be either 'error' or "
+                        "'ignore', got %s")
+            raise ValueError(template % self.handle_unknown)
+
+        if self.encoding == 'ordinal' and self.handle_unknown == 'ignore':
+            raise ValueError("handle_unknown='ignore' is not supported for"
+                             " encoding='ordinal'")
+
+        X = check_array(X, dtype=np.object, accept_sparse='csc', copy=True)
+        n_samples, n_features = X.shape
+
+        self._label_encoders_ = [LabelEncoder() for _ in range(n_features)]
+
+        for i in range(n_features):
+            le = self._label_encoders_[i]
+            Xi = X[:, i]
+            if self.categories == 'auto':
+                le.fit(Xi)
+            else:
+                valid_mask = np.in1d(Xi, self.categories[i])
+                if not np.all(valid_mask):
+                    if self.handle_unknown == 'error':
+                        diff = np.unique(Xi[~valid_mask])
+                        msg = ("Found unknown categories {0} in column {1}"
+                               " during fit".format(diff, i))
+                        raise ValueError(msg)
+                le.classes_ = np.array(np.sort(self.categories[i]))
+
+        self.categories_ = [le.classes_ for le in self._label_encoders_]
+
+        return self
+
+    def transform(self, X):
+
+        X = check_array(X, accept_sparse='csc', dtype=np.object, copy=True)
+        n_samples, n_features = X.shape
+        X_int = np.zeros_like(X, dtype=np.int)
+        X_mask = np.ones_like(X, dtype=np.bool)
+
+        for i in range(n_features):
+            valid_mask = np.in1d(X[:, i], self.categories_[i])
+
+            if not np.all(valid_mask):
+                if self.handle_unknown == 'error':
+                    diff = np.unique(X[~valid_mask, i])
+                    msg = ("Found unknown categories {0} in column {1}"
+                           " during transform".format(diff, i))
+                    raise ValueError(msg)
+                else:
+                    # Set the problematic rows to an acceptable value and
+                    # continue `The rows are marked `X_mask` and will be
+                    # removed later.
+                    X_mask[:, i] = valid_mask
+                    X[:, i][~valid_mask] = self.categories_[i][0]
+            X_int[:, i] = self._label_encoders_[i].transform(X[:, i])
+
+        if self.encoding == 'ordinal':
+            return X_int.astype(self.dtype, copy=False)
+
+        mask = X_mask.ravel()
+        n_values = [cats.shape[0] for cats in self.categories_]
+        n_values = np.array([0] + n_values)
+        indices = np.cumsum(n_values)
+
+        column_indices = (X_int + indices[:-1]).ravel()[mask]
+        row_indices = np.repeat(np.arange(n_samples, dtype=np.int32),
+                                n_features)[mask]
+        data = np.ones(n_samples * n_features)[mask]
+
+        out = sparse.csc_matrix((data, (row_indices, column_indices)),
+                                shape=(n_samples, indices[-1]),
+                                dtype=self.dtype).tocsr()
+        if self.encoding == 'onehot-dense':
+            return out.toarray()
+        else:
+            return out
+    # git복사 끝
+
+    # from sklearn.preprocessing import CategoricalEncoder # Scikit-Learn 0.20에서 추가 예정
+
+    cat_encoder = CategoricalEncoder(encoding="onehot-dense")
+    housing_cat_reshaped = housing_cat.values.reshape(-1, 1)
+    housing_cat_1hot = cat_encoder.fit_transform(housing_cat_reshaped)
+    housing_cat_1hot
+
+cat_encoder.categories_
+
+housing_cat = housing[['ocean_proximity']]
+housing_cat.head(10)
